@@ -12,7 +12,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'cad_path',
-            default_value='/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/mustard_bottle/mustard_bottle.ply',
+            default_value='/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/cube/cube.ply',
             description='Path to CAD model'
         ),
         DeclareLaunchArgument(
@@ -45,11 +45,25 @@ def generate_launch_description():
             default_value=os.path.join(pkg_dir, 'config', 'transform.yaml'),
             description='Path to transform configuration file'
         ),
-        
         DeclareLaunchArgument(
             'grasp_poses',
             default_value='true',
             description='Enable grasp poses generation from yaml files if available'
+        ),
+        DeclareLaunchArgument(
+            'instance_model',
+            default_value='sam2',
+            description='Instance segmentor model: sam | sam2 | fastsam'
+        ),
+        DeclareLaunchArgument(
+            'debug_outputs',
+            default_value='false',
+            description='If true, save debug frames/results into the model folder; if false, use temp dir and clean up'
+        ),
+        DeclareLaunchArgument(
+            'calib_preview',
+            default_value='true',
+            description='If true, open an Open3D window with point cloud in robot frame and coordinate frames'
         ),
         
         Node(
@@ -64,7 +78,10 @@ def generate_launch_description():
                 'camera_sn': LaunchConfiguration('camera_sn'),
                 'resolution': LaunchConfiguration('resolution'),
                 'transform_config': LaunchConfiguration('transform_config'),
-                'grasp_poses': LaunchConfiguration('grasp_poses'), 
+                'grasp_poses': LaunchConfiguration('grasp_poses'),
+                'instance_model': LaunchConfiguration('instance_model'),
+                'debug_outputs': LaunchConfiguration('debug_outputs'),
+                'calib_preview': LaunchConfiguration('calib_preview'),
             }],
             output='screen'
         )

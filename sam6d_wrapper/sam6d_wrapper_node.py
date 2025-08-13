@@ -9,12 +9,14 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import List
+import tempfile
+import time
 
 import cv2
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
-from rclpy.node import Node
+from rclpy.node import Node, SetParametersResult
 from std_msgs.msg import Header
 import pyzed.sl as sl
 
@@ -42,7 +44,6 @@ def _dict_to_pose(obj: dict) -> PoseWithConfidence:  # camera‑frame dict → d
 class Sam6DWrapper(Node):
     """High‑level orchestration node."""
 
-    # ------------------------------------------------------------------ setup
     def __init__(self):
         super().__init__('sam6d_wrapper')
 
@@ -57,6 +58,7 @@ class Sam6DWrapper(Node):
         self.declare_parameter('instance_model',    'sam')
         self.declare_parameter('grasp_poses',       True)
         self.declare_parameter('debug_outputs',     False)
+        self.declare_parameter('calib_preview',     False)
 
         # ------------------------- get params
         self.cad_path         = self.get_parameter('cad_path').value
@@ -69,6 +71,22 @@ class Sam6DWrapper(Node):
         self.instance_model   = self.get_parameter('instance_model').value
         self.use_grasps       = self.get_parameter('grasp_poses').value
         self.debug_outputs    = self.get_parameter('debug_outputs').value
+        self.calib_preview    = self.get_parameter('calib_preview').value
+
+        # Guard for runtime model switching
+        self.model_lock = threading.RLock()
+
+        # Log the initial model
+        self._last_logged_model = self.cad_path
+        cad_label = Path(self.cad_path).stem
+        self.get_logger().info(f'Using CAD model: {cad_label}')
+        self.get_logger().info(f'Using instance model: {self.instance_model}')
+
+        # Validate instance_model
+        allowed_models = {'sam', 'sam2', 'fastsam'}
+        if self.instance_model not in allowed_models:
+            self.get_logger().warn(f'instance_model "{self.instance_model}" not in {allowed_models}. Falling back to "sam".')
+            self.instance_model = 'sam'
 
         # ------------------------- load static transforms
         T_robot_chess, T_chess_cam1 = ConfigUtils.load_transforms(self.transform_config, self.get_logger())
@@ -95,9 +113,16 @@ class Sam6DWrapper(Node):
         threading.Thread(target=self._capture_worker,    daemon=True).start()
         threading.Thread(target=self._processing_worker, daemon=True).start()
 
+        # Optional: show calibration preview window (non-blocking)
+        if self.calib_preview:
+            threading.Thread(target=self._show_calibration_preview, daemon=True).start()
+
         # ------------------------- ROS interfaces
         self.pose_pub = self.create_publisher(PoseStamped, 'sam6d/pose', 10)
         self.create_timer(1.0 / self.processing_rate, self.trigger_processing)
+
+        # Register parameter change callback for model/segmentor switching
+        self.add_on_set_parameters_callback(self._on_param_change)
 
         self.get_logger().info('SAM‑6D wrapper up and running')
 
@@ -201,26 +226,40 @@ class Sam6DWrapper(Node):
             
     def _process_frame_data(self, frame_data):
         """Process frame data using SAM-6D subprocess"""
-        debug_dir = os.path.join(os.path.dirname(self.cad_path), 'debug_outputs')
-        os.makedirs(debug_dir, exist_ok=True)
-        
-        timestamp = frame_data['timestamp'].nanoseconds
-        processing_dir = os.path.join(debug_dir, f'processing_{timestamp}')
+
+        # Snapshot model-related parameters to avoid races during runtime switches
+        with self.model_lock:
+            cad_path = self.cad_path
+            templates_dir = self.model_templates_dir
+            instance_model = self.instance_model
+            debug_on = self.debug_outputs  # <-- snapshot
+
+        # Choose output location
+        if debug_on:
+            debug_dir = os.path.join(os.path.dirname(cad_path), 'debug_outputs')
+            os.makedirs(debug_dir, exist_ok=True)
+            timestamp = frame_data['timestamp'].nanoseconds
+            processing_dir = os.path.join(debug_dir, f'processing_{timestamp}')
+            cleanup_after = False
+        else:
+            processing_dir = tempfile.mkdtemp(prefix='sam6d_')  # /tmp/...
+            cleanup_after = True
+
         os.makedirs(processing_dir, exist_ok=True)
-        
+
         try:
             output_dir = os.path.join(processing_dir, 'outputs')
             os.makedirs(output_dir, exist_ok=True)
             
             # Copy pre-rendered templates
             templates_dest = os.path.join(output_dir, 'templates')
-            if os.path.exists(self.model_templates_dir):
-                shutil.copytree(self.model_templates_dir, templates_dest)
+            if os.path.exists(templates_dir):
+                shutil.copytree(templates_dir, templates_dest)
             else:
-                self.get_logger().error(f'Templates not found at {self.model_templates_dir}')
+                self.get_logger().error(f'Templates not found at {templates_dir}')
                 return None
             
-            # Save frame data
+            # Save frame data (always needed for SAM-6D scripts)
             rgb_path = os.path.join(processing_dir, 'rgb.png')
             depth_path = os.path.join(processing_dir, 'depth.png')
             camera_path = os.path.join(processing_dir, 'camera.json')
@@ -232,43 +271,57 @@ class Sam6DWrapper(Node):
                 json.dump(frame_data['camera_info'], f, indent=2)
             
             self.get_logger().info(f'Processing frame: RGB {frame_data["rgb"].shape}, Depth {frame_data["depth"].shape}')
-            self.get_logger().info(f'Debug files saved to: {processing_dir}')
+            if debug_on:
+                self.get_logger().info(f'Debug files saved to: {processing_dir}')
             
             # Run SAM-6D inference
-            result = self._run_sam6d_inference(output_dir, rgb_path, depth_path, camera_path)
+            result = self._run_sam6d_inference(output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model)
             
             if result:
-                self.get_logger().info(f'SAM-6D results available at: {output_dir}')
+                if debug_on:
+                    self.get_logger().info(f'SAM-6D results available at: {output_dir}')
+                else:
+                    self.get_logger().info('SAM-6D results computed')
             else:
-                self.get_logger().warning(f'No poses detected. Check debug files at: {processing_dir}')
+                if debug_on:
+                    self.get_logger().warning(f'No poses detected. Check debug files at: {processing_dir}')
+                else:
+                    self.get_logger().warning('No poses detected.')
             
             return result
         
         except Exception as e:
             self.get_logger().error(f'Frame processing error: {e}')
             return None
-    
-    def _run_sam6d_inference(self, output_dir, rgb_path, depth_path, camera_path):
+        finally:
+            # Clean temp dir when debug is off
+            if cleanup_after:
+                try:
+                    shutil.rmtree(processing_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+    def _run_sam6d_inference(self, output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model):
         """Run SAM-6D inference only (templates already exist)"""
         try:
             env = os.environ.copy()
             env.update({
                 'OUTPUT_DIR': output_dir,
-                'CAD_PATH': self.cad_path,
+                'CAD_PATH': cad_path,
                 'RGB_PATH': rgb_path,
                 'DEPTH_PATH': depth_path,
                 'CAMERA_PATH': camera_path,
-                'SEGMENTOR_MODEL': self.instance_model
+                'SEGMENTOR_MODEL': instance_model
             })
             
-            self.get_logger().info(f'Running SAM-6D inference...')
+            self.get_logger().info('Running SAM-6D inference...')
             
             # Run instance segmentation
             result1 = subprocess.run(
                 ['python3', 'run_inference_custom.py', 
-                 '--segmentor_model', self.instance_model,
+                 '--segmentor_model', instance_model,
                  '--output_dir', output_dir,
-                 '--cad_path', self.cad_path,
+                 '--cad_path', cad_path,
                  '--rgb_path', rgb_path,
                  '--depth_path', depth_path,
                  '--cam_path', camera_path],
@@ -293,7 +346,7 @@ class Sam6DWrapper(Node):
             result2 = subprocess.run(
                 ['python3', 'run_inference_custom.py',
                  '--output_dir', output_dir,
-                 '--cad_path', self.cad_path,
+                 '--cad_path', cad_path,
                  '--rgb_path', rgb_path,
                  '--depth_path', depth_path,
                  '--cam_path', camera_path,
@@ -339,7 +392,11 @@ class Sam6DWrapper(Node):
     # Grasp pipeline ---------------------------------------------------------
     ##########################################################################
     def _generate_grasp_poses(self, obj_pose_cam: PoseWithConfidence) -> List[dict]:
-        grasps_cfg = GraspUtils.load_grasp_config(self.cad_path, self.model_name, self.get_logger())
+        # Snapshot current model info to avoid races
+        with self.model_lock:
+            cad_path = self.cad_path
+            model_name = self.model_name
+        grasps_cfg = GraspUtils.load_grasp_config(cad_path, model_name, self.get_logger())
         if not grasps_cfg:
             return []
         return GraspUtils.generate_grasp_poses({
@@ -376,6 +433,92 @@ class Sam6DWrapper(Node):
         except Exception as e:
             self.get_logger().error(f'Error during cleanup: {e}')
 
+    def _show_calibration_preview(self):
+        """Open an Open3D window showing the current RGB-D point cloud in robot frame plus coordinate frames."""
+        try:
+            import open3d as o3d
+        except Exception as e:
+            self.get_logger().warn(f'Open3D not available ({e}). Skipping calibration preview.')
+            return
+
+        # Wait for a frame
+        self.get_logger().info('Calibration preview: waiting for a frame...')
+        rgb, depth = None, None
+        for _ in range(100):  # ~5 seconds at 50 ms
+            with self.frame_lock:
+                if self.latest_rgb is not None and self.latest_depth is not None:
+                    rgb = self.latest_rgb.copy()
+                    depth = self.latest_depth.copy()
+                    break
+            time.sleep(0.05)
+
+        if rgb is None:
+            self.get_logger().warn('Calibration preview: no frame captured. Skipping.')
+            return
+
+        # Build Open3D RGBD and point cloud in camera frame
+        h, w = rgb.shape[:2]
+        color_o3d = o3d.geometry.Image(cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
+        depth_o3d = o3d.geometry.Image(depth)  # uint16 in millimeters
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            color_o3d, depth_o3d,
+            depth_scale=1000.0,  # mm -> m
+            depth_trunc=5.0,
+            convert_rgb_to_intensity=False
+        )
+
+        fx, fy, cx, cy = self.camera_intrinsics['cam_K'][0], self.camera_intrinsics['cam_K'][4], self.camera_intrinsics['cam_K'][2], self.camera_intrinsics['cam_K'][5]
+        intrinsic = o3d.camera.PinholeCameraIntrinsic(w, h, fx, fy, cx, cy)
+        pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
+        # Optional voxel downsample for performance
+        pcd = pcd.voxel_down_sample(voxel_size=0.01)
+
+        # Transform to robot frame
+        T = np.asarray(self.T_cam_robot, dtype=float)
+        pcd.transform(T)
+
+        # Coordinate frames: robot base at origin, camera at its pose in robot frame
+        base_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.3, origin=[0, 0, 0])
+        cam_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1)
+        cam_frame.transform(T)
+
+        self.get_logger().info('Calibration preview: showing point cloud in robot frame. Close the window to continue.')
+        try:
+            o3d.visualization.draw_geometries([pcd, base_frame, cam_frame], window_name='SAM6D Calibration Preview')
+        except Exception as e:
+            self.get_logger().warn(f'Open3D visualization error: {e}')
+
+    def _on_param_change(self, params):
+        allowed_models = {'sam', 'sam2', 'fastsam'}
+        for param in params:
+            if param.name == 'cad_path' and isinstance(param.value, str):
+                with self.model_lock:
+                    self.cad_path = param.value
+                    self.model_name = Path(self.cad_path).stem
+                    self.model_templates_dir = str(Path(self.cad_path).with_suffix('')) + '_templates'
+                    self._last_logged_model = self.cad_path
+                self.get_logger().info(f'CAD model changed: {self.model_name}')
+                threading.Thread(target=self._ensure_templates_exist, daemon=True).start()
+
+            elif param.name == 'instance_model':
+                new_model = str(param.value)
+                if new_model not in allowed_models:
+                    self.get_logger().warn(f'instance_model "{new_model}" not in {allowed_models}. Keeping "{self.instance_model}".')
+                else:
+                    with self.model_lock:
+                        self.instance_model = new_model
+                    self.get_logger().info(f'Instance model changed: {self.instance_model}')
+
+            elif param.name == 'calib_preview':
+                with self.model_lock:
+                    self.calib_preview = bool(param.value)
+                if self.calib_preview:
+                    self.get_logger().info('Calibration preview enabled.')
+                    threading.Thread(target=self._show_calibration_preview, daemon=True).start()
+                else:
+                    self.get_logger().info('Calibration preview disabled.')
+        return SetParametersResult(successful=True)
+
 def main(args=None):
     rclpy.init(args=args)
     node = Sam6DWrapper()
@@ -388,6 +531,7 @@ def main(args=None):
         node.cleanup()
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
