@@ -7,10 +7,10 @@ import queue
 import shutil
 import subprocess
 import threading
-from pathlib import Path
-from typing import List
-import tempfile
 import time
+from pathlib import Path
+from typing import List, Optional
+import tempfile
 
 import cv2
 import numpy as np
@@ -25,6 +25,8 @@ from .pose_utils import (
     euler_to_rotation_matrix, quat_to_rot, rot_to_quat, quat_to_euler, 
     GraspUtils, Sam6DUtils, ConfigUtils
 )
+
+from .visualization.main_visualizer import PerceptionVisualizer
 
 ################################################################################
 # Helper conversion -----------------------------------------------------------
@@ -59,6 +61,9 @@ class Sam6DWrapper(Node):
         self.declare_parameter('grasp_poses',       True)
         self.declare_parameter('debug_outputs',     False)
         self.declare_parameter('calib_preview',     False)
+        self.declare_parameter('use_best_ism_only', True)
+        self.declare_parameter('log_benchmarks',    False)
+        self.declare_parameter('grasps_visualization', True)
 
         # ------------------------- get params
         self.cad_path         = self.get_parameter('cad_path').value
@@ -72,9 +77,18 @@ class Sam6DWrapper(Node):
         self.use_grasps       = self.get_parameter('grasp_poses').value
         self.debug_outputs    = self.get_parameter('debug_outputs').value
         self.calib_preview    = self.get_parameter('calib_preview').value
+        self.use_best_ism_only = self.get_parameter('use_best_ism_only').value
+        self.log_benchmarks    = self.get_parameter('log_benchmarks').value
+        self.grasps_visualization = self.get_parameter('grasps_visualization').value
 
         # Guard for runtime model switching
         self.model_lock = threading.RLock()
+        
+        # Setup visualizer
+        if self.grasps_visualization:
+            self.visualizer = PerceptionVisualizer()
+        else:
+            self.visualizer = None
 
         # Log the initial model
         self._last_logged_model = self.cad_path
@@ -254,7 +268,26 @@ class Sam6DWrapper(Node):
             # Copy pre-rendered templates
             templates_dest = os.path.join(output_dir, 'templates')
             if os.path.exists(templates_dir):
-                shutil.copytree(templates_dir, templates_dest)
+                # Avoid duplicating templates in debug outputs: symlink to cached dir
+                try:
+                    # Clean destination if it already exists
+                    if os.path.lexists(templates_dest):
+                        if os.path.islink(templates_dest) or os.path.isfile(templates_dest):
+                            os.unlink(templates_dest)
+                        else:
+                            shutil.rmtree(templates_dest, ignore_errors=True)
+
+                    os.symlink(os.path.abspath(templates_dir), templates_dest, target_is_directory=True)
+                    self.get_logger().info(f'Linked templates -> {templates_dir}')
+                except OSError as e:
+                    if debug_on:
+                        # In debug mode, never copy large templates; fail early so we don't bloat outputs
+                        self.get_logger().error(f'Failed to symlink templates in debug mode: {e}')
+                        return None
+                    else:
+                        # In temp runs, a copy is acceptable as a fallback
+                        self.get_logger().warn(f'Failed to symlink templates ({e}). Falling back to copy for this temp run.')
+                        shutil.copytree(templates_dir, templates_dest)
             else:
                 self.get_logger().error(f'Templates not found at {templates_dir}')
                 return None
@@ -304,6 +337,7 @@ class Sam6DWrapper(Node):
     def _run_sam6d_inference(self, output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model):
         """Run SAM-6D inference only (templates already exist)"""
         try:
+            t_start = time.time()  # benchmark start
             env = os.environ.copy()
             env.update({
                 'OUTPUT_DIR': output_dir,
@@ -317,6 +351,7 @@ class Sam6DWrapper(Node):
             self.get_logger().info('Running SAM-6D inference...')
             
             # Run instance segmentation
+            t_seg_start = time.time()  # benchmark segmentation
             result1 = subprocess.run(
                 ['python3', 'run_inference_custom.py', 
                  '--segmentor_model', instance_model,
@@ -331,6 +366,8 @@ class Sam6DWrapper(Node):
                 text=True,
                 timeout=600
             )
+            t_seg_end = time.time()
+            seg_duration = t_seg_end - t_seg_start
             
             if result1.returncode != 0:
                 self.get_logger().error(f'Instance segmentation failed: {result1.stderr}')
@@ -341,8 +378,15 @@ class Sam6DWrapper(Node):
             if not os.path.exists(seg_path):
                 self.get_logger().error(f'Segmentation results not found at {seg_path}')
                 return None
-            
+
+            # Keep only the best ISM detection (by score/confidence) if enabled
+            if self.use_best_ism_only:
+                seg_path_to_use = self._select_best_detection(seg_path)
+            else:
+                seg_path_to_use = seg_path
+
             # Run pose estimation
+            t_pose_start = time.time()  # benchmark pose estimation
             result2 = subprocess.run(
                 ['python3', 'run_inference_custom.py',
                  '--output_dir', output_dir,
@@ -350,19 +394,26 @@ class Sam6DWrapper(Node):
                  '--rgb_path', rgb_path,
                  '--depth_path', depth_path,
                  '--cam_path', camera_path,
-                 '--seg_path', seg_path],
+                 '--seg_path', seg_path_to_use],
                 cwd=os.path.join(self.sam6d_path, 'Pose_Estimation_Model'),
                 env=env,
                 capture_output=True,
                 text=True,
                 timeout=600
             )
-            
+            t_pose_end = time.time()
+            pose_duration = t_pose_end - t_pose_start
+            total_duration = time.time() - t_start
+
             if result2.returncode != 0:
                 self.get_logger().error(f'Pose estimation failed: {result2.stderr}')
                 return None
-            
+
+            if self.log_benchmarks:
+                self.get_logger().info(f'Benchmark: segmentation={seg_duration:.3f}s, pose_estimation={pose_duration:.3f}s, total={total_duration:.3f}s')
+
             self.get_logger().info('SAM-6D inference completed successfully')
+            
             
             # Parse results using utils
             return Sam6DUtils.parse_results(output_dir, self.get_logger())
@@ -373,6 +424,57 @@ class Sam6DWrapper(Node):
         except Exception as e:
             self.get_logger().error(f'Inference error: {e}')
             return None
+
+    def _select_best_detection(self, seg_path: str) -> str:
+        """Read detection_ism.json and write detection_ism_best.json with only the top detection.
+        Falls back to original seg_path on any error or unknown schema."""
+        try:
+            with open(seg_path, 'r') as f:
+                data = json.load(f)
+
+            # Find list of detections under common keys or as a top-level list
+            det_list = None
+            container = None
+            key = None
+
+            if isinstance(data, list):
+                det_list = data
+            elif isinstance(data, dict):
+                for k in ['detections', 'instances', 'objects', 'predictions', 'results']:
+                    if isinstance(data.get(k), list):
+                        det_list = data[k]
+                        container = data
+                        key = k
+                        break
+
+            if not det_list:
+                self.get_logger().warn('ISM JSON schema not recognized or empty; using original detections.')
+                return seg_path
+
+            def score_of(d):
+                for s in ['score', 'confidence', 'conf', 'prob', 'mask_score']:
+                    v = d.get(s)
+                    if isinstance(v, (int, float)):
+                        return float(v)
+                return 0.0
+
+            best = max(det_list, key=score_of)
+            if container is None:
+                best_data = [best]
+            else:
+                best_data = dict(container)
+                best_data[key] = [best]
+
+            best_path = os.path.join(os.path.dirname(seg_path), 'detection_ism_best.json')
+            with open(best_path, 'w') as f:
+                json.dump(best_data, f, indent=2)
+
+            self.get_logger().info('Filtered ISM detections to best only (passing a single instance to PEM).')
+            return best_path
+
+        except Exception as e:
+            self.get_logger().warn(f'Failed to filter ISM detections: {e}. Using original detections.')
+            return seg_path
 
     ##########################################################################
     # Publisher -----------------------------------------------------
@@ -409,6 +511,7 @@ class Sam6DWrapper(Node):
         grasps_cam_dicts = self._generate_grasp_poses(obj_pose_cam)
         if not grasps_cam_dicts:
             return None
+        
         grasps_robot_dicts = []
         for g_cam in grasps_cam_dicts:
             g_cam_obj = _dict_to_pose(g_cam)
@@ -422,8 +525,138 @@ class Sam6DWrapper(Node):
                 'orientation': q_final.tolist(),
                 'confidence': g_robot_obj.confidence,
             })
-        return GraspUtils.select_best_grasp(grasps_robot_dicts, logger=self.get_logger())
+        
+        # Select best grasp
+        best_grasp = GraspUtils.select_best_grasp(grasps_robot_dicts, logger=self.get_logger())
+        
+        # Visualize if enabled
+        if self.grasps_visualization and self.visualizer and len(grasps_robot_dicts) > 0:
+            self._show_grasp_visualizations(grasps_robot_dicts, best_grasp)
+        
+        return best_grasp
+
+    def _show_grasp_visualizations(self, all_grasps: List[dict], best_grasp: dict):
+        """Show two visualizations: all grasps, then best grasp only"""
+        try:
+            # Get current frame for point cloud (optional)
+            point_cloud_data = self._create_point_cloud_from_rgbd()
             
+            # Start visualization in separate thread to avoid blocking
+            threading.Thread(
+                target=self._run_visualization_thread,
+                args=(all_grasps, best_grasp, point_cloud_data),
+                daemon=True
+            ).start()
+            
+        except Exception as e:
+            self.get_logger().error(f"Visualization error: {e}")
+
+    def _run_visualization_thread(self, all_grasps: List[dict], best_grasp: dict, point_cloud_data: np.ndarray):
+        """Run visualization in separate thread with two windows"""
+        try:
+            # Convert grasps to visualization format
+            all_grasp_poses = []
+            for grasp in all_grasps:
+                grasp_pose = {
+                    'position': grasp['position'],
+                    'quaternion': grasp['orientation'],  # [x, y, z, w] format
+                    'name': grasp['name']
+                }
+                all_grasp_poses.append(grasp_pose)
+            
+            # Setup colors - highlight best grasp in red, others in default colors
+            gripper_colors_all = []
+            for i, grasp in enumerate(all_grasps):
+                if best_grasp and grasp['name'] == best_grasp['name']:
+                    gripper_colors_all.append((1.0, 0.0, 0.0))  # Red for best grasp
+                else:
+                    # Use semi-transparent versions of default colors
+                    base_color = self.visualizer.gripper_colors[i % len(self.visualizer.gripper_colors)]
+                    gripper_colors_all.append((base_color[0] * 0.7, base_color[1] * 0.7, base_color[2] * 0.7))
+            
+            # Log grasp information
+            self.get_logger().info(f"Showing visualization of {len(all_grasps)} grasps (best: {best_grasp['name'] if best_grasp else 'none'})")
+            
+            # Visualization 1: All grasps
+            window_name_all = f"All {len(all_grasps)} Grasps - Best: {best_grasp['name'] if best_grasp else 'None'}"
+            self.visualizer.visualize_grasps_simple(
+                grasp_poses=all_grasp_poses,
+                point_cloud_data=point_cloud_data,
+                gripper_colors=gripper_colors_all,
+                window_name=window_name_all,
+                show_sweep_volume=False
+            )
+            
+            # Small delay between visualizations
+            time.sleep(0.5)
+            
+            # Visualization 2: Best grasp only
+            if best_grasp:
+                best_grasp_pose = {
+                    'position': best_grasp['position'],
+                    'quaternion': best_grasp['orientation'],
+                    'name': best_grasp['name']
+                }
+                
+                window_name_best = f"Best Grasp: {best_grasp['name']}"
+                self.visualizer.visualize_grasps_simple(
+                    grasp_poses=[best_grasp_pose],
+                    point_cloud_data=point_cloud_data,
+                    gripper_colors=[(0.0, 1.0, 0.0)],  # Green for best grasp
+                    window_name=window_name_best,
+                    show_sweep_volume=True  # Show sweep volume for best grasp
+                )
+            
+        except Exception as e:
+            self.get_logger().error(f"Visualization thread error: {e}")
+
+    def _create_point_cloud_from_rgbd(self) -> Optional[np.ndarray]:
+        """Create point cloud from current RGB-D frame"""
+        try:
+            with self.frame_lock:
+                if self.latest_rgb is None or self.latest_depth is None:
+                    return None
+                
+                rgb = self.latest_rgb.copy()
+                depth = self.latest_depth.copy()
+            
+            # Get camera intrinsics
+            fx, fy = self.camera_intrinsics['cam_K'][0], self.camera_intrinsics['cam_K'][4]
+            cx, cy = self.camera_intrinsics['cam_K'][2], self.camera_intrinsics['cam_K'][5]
+            
+            # Create point cloud
+            h, w = depth.shape
+            points = []
+            
+            # Sample every N pixels to reduce point cloud size
+            step = 4  # Adjust for performance vs quality
+            
+            for v in range(0, h, step):
+                for u in range(0, w, step):
+                    z = depth[v, u] / 1000.0  # Convert mm to meters
+                    
+                    if z > 0.1 and z < 2.0:  # Filter reasonable depths
+                        x = (u - cx) * z / fx
+                        y = (v - cy) * z / fy
+                        points.append([x, y, z])
+            
+            if len(points) > 0:
+                points_array = np.array(points)
+                # Transform to robot frame
+                points_robot = []
+                for point in points_array:
+                    point_h = np.append(point, 1.0)
+                    point_robot = self.T_cam_robot @ point_h
+                    points_robot.append(point_robot[:3])
+                
+                return np.array(points_robot)
+            
+            return None
+            
+        except Exception as e:
+            self.get_logger().error(f"Point cloud creation error: {e}")
+            return None
+
     def cleanup(self):
         """Cleanup resources"""
         try:
@@ -517,6 +750,10 @@ class Sam6DWrapper(Node):
                     threading.Thread(target=self._show_calibration_preview, daemon=True).start()
                 else:
                     self.get_logger().info('Calibration preview disabled.')
+            elif param.name == 'use_best_ism_only':
+                with self.model_lock:
+                    self.use_best_ism_only = bool(param.value)
+                self.get_logger().info(f'use_best_ism_only: {self.use_best_ism_only}')
         return SetParametersResult(successful=True)
 
 def main(args=None):

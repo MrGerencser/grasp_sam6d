@@ -95,7 +95,7 @@ def convert_stl_to_ply(input_file, output_file, subdivide=True, smooth=False, re
     return mesh
 
 if __name__ == "__main__":
-    input_file = '/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/master_chef_can/master_chef_can.stl'
+    input_file = '/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/master_chef_can/master_chef_can_mesh.stl'
     output_file = '/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/master_chef_can/master_chef_can_new.ply'
 
     # Convert with high accuracy options
@@ -105,5 +105,5 @@ if __name__ == "__main__":
         subdivide=True,        # Increase mesh detail
         smooth=False,          # Keep original geometry sharp
         remove_duplicates=True,
-        target_faces=50000     # Limit faces if too many (adjust as needed)
+        target_faces=500000     # Limit faces if too many (adjust as needed)
     )

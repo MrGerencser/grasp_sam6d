@@ -46,6 +46,6 @@ def main(pcd_path, yaml_path):
     o3d.visualization.draw_geometries([pcd, *grasp_frames])
 
 if __name__ == "__main__":
-    pcd_path = "/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/master_chef_can/master_chef_can.ply"
-    yaml_path = "/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/master_chef_can/master_chef_can_grasps.yaml"
+    pcd_path = "/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/mustard_bottle/mustard_bottle.ply"
+    yaml_path = "/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/mustard_bottle/mustard_bottle_grasps.yaml"
     main(pcd_path, yaml_path)

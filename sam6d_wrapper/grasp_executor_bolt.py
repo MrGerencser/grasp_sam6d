@@ -40,9 +40,9 @@ class GraspFailureException(Exception):
     pass
 
 
-class GraspExecutor(Node):
+class GraspExecutorBolt(Node):
     def __init__(self):
-        super().__init__('grasp_executor')
+        super().__init__('grasp_executor_bolt')
         
         # Configuration constants
         self.config = {
@@ -91,7 +91,7 @@ class GraspExecutor(Node):
         self.current_robot_pose = None
         self.target_pose = None
         self.pose_tolerance = {
-            'position': 0.02,  # 20mm tolerance
+            'position': 0.01,  # 10mm tolerance
             'orientation': 0.05  # ~3 degrees tolerance
         }
         
@@ -187,8 +187,8 @@ class GraspExecutor(Node):
         if self._poses_are_close(
             self.current_robot_pose, 
             self.target_pose,
-            position_tolerance=self.pose_tolerance['position'],
-            orientation_tolerance=self.pose_tolerance['orientation']
+            position_tolerance=0.04,
+            orientation_tolerance=0.2
         ):
             return 'completed'
         if self._check_timeout(timeout_seconds):
@@ -444,9 +444,9 @@ class GraspExecutor(Node):
         """Check if grasp was successful"""
         if self.gripper_width is None:
             raise GraspFailureException("Cannot verify grasp: no gripper data")
-
-        grasp_failure_threshold = 0.002  # 2mm
-
+        
+        grasp_failure_threshold = 0.005  # 5mm
+        
         self.get_logger().info(f"Gripper width: {self.gripper_width*1000:.1f}mm")
         
         if self.gripper_width <= grasp_failure_threshold:
@@ -502,6 +502,18 @@ class GraspExecutor(Node):
             f"Received grasp pose: [{msg.pose.position.x:.3f}, {msg.pose.position.y:.3f}, {msg.pose.position.z:.3f}]"
         )
         
+        home_rotation = R_simple.from_euler('xyz', [np.pi, 0.0, 0.0])
+        home_quat = home_rotation.as_quat()  # x, y, z, w
+        self.get_logger().info(
+            f"Home orientation: [{home_quat[0]:.3f}, {home_quat[1]:.3f}, {home_quat[2]:.3f}, {home_quat[3]:.3f}]"
+        )
+        
+        # Force object quaternion to home orientation
+        msg.pose.orientation.x = home_quat[0]
+        # msg.pose.orientation.y = home_quat[1]
+        # msg.pose.orientation.z = home_quat[2]
+        msg.pose.orientation.w = home_quat[3]
+
         if self.current_state != GraspState.IDLE:
             # Store as pending instead of overwriting current
             self.pending_grasp_pose = msg
@@ -808,7 +820,7 @@ class GraspExecutor(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = GraspExecutor()
+    node = GraspExecutorBolt()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

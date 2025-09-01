@@ -12,7 +12,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'cad_path',
-            default_value='/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/cube/cube.ply',
+            default_value='/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/main_dataset/allergenfreejarrodophilus/allergenfreejarrodophilus.ply',
             description='Path to CAD model'
         ),
         DeclareLaunchArgument(
@@ -37,7 +37,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'resolution',
-            default_value='HD720',
+            default_value='HD1080',
             description='Camera resolution (HD720, HD1080, HD2K)'
         ),
         DeclareLaunchArgument(
@@ -57,13 +57,28 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'debug_outputs',
-            default_value='false',
+            default_value='true',
             description='If true, save debug frames/results into the model folder; if false, use temp dir and clean up'
         ),
         DeclareLaunchArgument(
-            'calib_preview',
+            'use_best_ism_only',
             default_value='true',
+            description='Filter ISM detections to the single best before PEM'
+        ),
+        DeclareLaunchArgument(
+            'log_benchmarks',
+            default_value='true',
+            description='If true, log processing benchmarks'
+        ),
+        DeclareLaunchArgument(
+            'calib_preview',
+            default_value='false',
             description='If true, open an Open3D window with point cloud in robot frame and coordinate frames'
+        ),
+        DeclareLaunchArgument(
+            'grasps_visualization',
+            default_value='false',
+            description='Visualize grasps in 3D space'
         ),
         
         Node(
@@ -81,7 +96,10 @@ def generate_launch_description():
                 'grasp_poses': LaunchConfiguration('grasp_poses'),
                 'instance_model': LaunchConfiguration('instance_model'),
                 'debug_outputs': LaunchConfiguration('debug_outputs'),
+                'use_best_ism_only': LaunchConfiguration('use_best_ism_only'),
+                'log_benchmarks': LaunchConfiguration('log_benchmarks'),
                 'calib_preview': LaunchConfiguration('calib_preview'),
+                'grasps_visualization': LaunchConfiguration('grasps_visualization'),
             }],
             output='screen'
         )
