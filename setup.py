@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 from glob import glob
 import os
 
-package_name = 'sam6d_wrapper'
+package_name = 'grasp_sam6d'
 
 setup(
     name=package_name,
@@ -28,14 +28,13 @@ setup(
     zip_safe=True,
     maintainer='chris',
     maintainer_email='gejan@ethz.ch',
-    description='SAM-6D wrapper for ROS2',
+    description='Grasp_sam6D wrapper for ROS2',
     license='MIT',
     entry_points={
         'console_scripts': [
-            'sam6d_wrapper = sam6d_wrapper.sam6d_wrapper_node:main',
-            'sam6d_wrapper_cube = sam6d_wrapper.sam6d_wrapper_cube_node:main',
-            'grasp_executor = sam6d_wrapper.grasp_executor:main',
-            'grasp_executor_bolt = sam6d_wrapper.grasp_executor_bolt:main',
+            'grasp_sam6d = grasp_sam6d.grasp_sam6d_node:main',
+            'grasp_executor = grasp_sam6d.grasp_executor:main',
+            'grasp_executor_bolt = grasp_sam6d.grasp_executor_bolt:main',
         ],
     },
 )

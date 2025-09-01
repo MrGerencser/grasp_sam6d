@@ -43,11 +43,11 @@ def _dict_to_pose(obj: dict) -> PoseWithConfidence:  # camera‑frame dict → d
 # Main node -------------------------------------------------------------------
 ################################################################################
 
-class Sam6DWrapper(Node):
+class GraspSAM6D(Node):
     """High‑level orchestration node."""
 
     def __init__(self):
-        super().__init__('sam6d_wrapper')
+        super().__init__('grasp_sam6d')
 
         # ------------------------- parameters
         self.declare_parameter('cad_path',          str(Path.home() / 'model.ply'))
@@ -758,7 +758,7 @@ class Sam6DWrapper(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Sam6DWrapper()
+    node = GraspSAM6D()
     
     try:
         rclpy.spin(node)

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>sam6d_wrapper</name>
+  <name>grasp_sam6d</name>
   <version>0.0.0</version>
   <description>SAM-6D wrapper for ROS2 with ZED camera integration</description>
   <maintainer email="gejan@ethz.ch">chris</maintainer>

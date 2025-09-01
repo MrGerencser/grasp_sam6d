@@ -1,4 +1,4 @@
-# SAM-6D ROS2 Wrapper (with ZED Camera and Grasp Synthesis)
+# Grasp_sam6d ROS2 Wrapper (with ZED Camera and Grasp Synthesis)
 
 A ROS 2 Python node that leverages the work of [SAM-6D](https://github.com/JiehongLin/SAM-6D),
 integrated with a ZED camera for grasp synthesis tasks.
@@ -37,7 +37,7 @@ The original SAM-6D uses a Conda-based environment. However, since ROS 2 general
 1. **Clone the package into your ROS 2 workspace**
    ```bash
    cd ~/franka_ros2_ws/src
-   git clone https://github.com/MrGerencser/sam6d_wrapper
+   git clone https://github.com/MrGerencser/grasp_sam6d
    ```
 
 2. **Install dependencies**
@@ -76,5 +76,5 @@ The original SAM-6D uses a Conda-based environment. However, since ROS 2 general
 
 3. **Launch Node**
    ```bash
-   ros2 run sam6d_wrapper sam6d_wrapper
+   ros2 launch grasp_sam6d grasp_sam6d.launch.py 
    ```

@@ -7,12 +7,12 @@ import os
 
 def generate_launch_description():
     # Get package directory
-    pkg_dir = get_package_share_directory('sam6d_wrapper')
+    pkg_dir = get_package_share_directory('grasp_sam6d')
     
     return LaunchDescription([
         DeclareLaunchArgument(
             'cad_path',
-            default_value='/home/chris/franka_ros2_ws/src/sam6d_wrapper/Data/models/main_dataset/allergenfreejarrodophilus/allergenfreejarrodophilus.ply',
+            default_value='/home/chris/franka_ros2_ws/src/grasp_sam6d/Data/models/main_dataset/allergenfreejarrodophilus/allergenfreejarrodophilus.ply',
             description='Path to CAD model'
         ),
         DeclareLaunchArgument(
@@ -82,9 +82,9 @@ def generate_launch_description():
         ),
         
         Node(
-            package='sam6d_wrapper',
-            executable='sam6d_wrapper',
-            name='sam6d_wrapper',
+            package='grasp_sam6d',
+            executable='grasp_sam6d',
+            name='grasp_sam6d',
             parameters=[{
                 'cad_path': LaunchConfiguration('cad_path'),
                 'sam6d_path': LaunchConfiguration('sam6d_path'),
