@@ -45,13 +45,17 @@ The original SAM-6D uses a Conda-based environment. However, since ROS 2 general
    cd ~/franka_ros2_ws
    rosdep install --from-paths src --ignore-src -r -y
    ```
+3. **Install Hugging Face Hub** (required for downloading object models)
+   ```bash
+   pip install --upgrade huggingface_hub
+   ```
 
-3. **Download object models**
+4. **Download object models**
    ```bash
    python scripts/download_object_models.py   # or provide your own CAD files
    ```
 
-4. **Build**
+5. **Build**
    ```bash
    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
    source install/setup.bash
