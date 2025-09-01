@@ -28,6 +28,23 @@ from .pose_utils import (
 
 from .visualization.main_visualizer import PerceptionVisualizer
 
+# Add these imports at the top
+import sys
+from pathlib import Path
+
+# Add SAM-6D paths to Python path
+SAM6D_ISM_PATH = Path.home() / 'SAM-6D' / 'SAM-6D' / 'Instance_Segmentation_Model'
+SAM6D_PEM_PATH = Path.home() / 'SAM-6D' / 'SAM-6D' / 'Pose_Estimation_Model'
+sys.path.insert(0, str(SAM6D_ISM_PATH))
+sys.path.insert(0, str(SAM6D_PEM_PATH))
+
+try:
+    from inference_service import get_ism_model
+    from pose_estimation_service import get_pose_model
+    PERSISTENT_MODELS_AVAILABLE = True
+except ImportError as e:
+    PERSISTENT_MODELS_AVAILABLE = False
+
 ################################################################################
 # Helper conversion -----------------------------------------------------------
 ################################################################################
@@ -138,6 +155,26 @@ class GraspSAM6D(Node):
         # Register parameter change callback for model/segmentor switching
         self.add_on_set_parameters_callback(self._on_param_change)
 
+        # Add persistent model initialization
+        self.ism_model = None
+        self.pose_model = None
+        self.use_persistent_models = False
+
+        # Try to initialize persistent models
+        if PERSISTENT_MODELS_AVAILABLE:
+            try:
+                self.get_logger().info('Loading SAM-6D models...')
+                self._init_persistent_models()
+                self.use_persistent_models = True
+                self.get_logger().info('SAM-6D models loaded successfully')
+            except Exception as e:
+                self.get_logger().error(f'Failed to load SAM-6D models: {e}')
+                self.get_logger().error(f'Traceback: {traceback.format_exc()}')
+                self.get_logger().warn('Falling back to subprocess mode')
+                self.use_persistent_models = False
+        else:
+            self.get_logger().warn('Persistent model services not available. Using subprocess mode.')
+        
         self.get_logger().info('SAM‑6D wrapper up and running')
 
     ############################################################################
@@ -334,10 +371,172 @@ class GraspSAM6D(Node):
                 except Exception:
                     pass
 
+    def _init_persistent_models(self):
+        """Initialize persistent SAM-6D models once"""
+        # Initialize ISM model
+        self.get_logger().info(f'Initializing InstanceSegmentationModel with segmentor_model={self.instance_model}')
+        self.ism_model = get_ism_model(
+            segmentor_model=self.instance_model,
+            stability_score_thresh=0.97
+        )
+        self.get_logger().info('InstanceSegmentationModel initialized successfully')
+        
+        # Initialize PEM model  
+        config_path = os.path.join(self.sam6d_path, 'Pose_Estimation_Model', 'config', 'base.yaml')
+        self.get_logger().info(f'Initializing PoseEstimationModel with config_path={config_path}')
+        self.pose_model = get_pose_model(
+            config_path=config_path,
+            checkpoint_path=None,  # Uses default checkpoint
+            gpu_id="0"
+        )
+        self.get_logger().info('PoseEstimationModel initialized successfully')
+
     def _run_sam6d_inference(self, output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model):
-        """Run SAM-6D inference only (templates already exist)"""
+        """Run SAM-6D inference using either persistent models or subprocess"""
+        
+        if self.use_persistent_models and self.ism_model and self.pose_model:
+            return self._run_sam6d_inference_persistent(
+                output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model
+            )
+        else:
+            return self._run_sam6d_inference_subprocess(
+                output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model
+            )
+
+    def _run_sam6d_inference_persistent(self, output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model):
+        """Run SAM-6D inference using persistent models (much faster)"""
         try:
-            t_start = time.time()  # benchmark start
+            t_start = time.time()
+            templates_dir = os.path.join(output_dir, 'templates')
+            
+            self.get_logger().info('Running SAM-6D inference with persistent models...')
+            
+            # Step 1: Instance Segmentation
+            t_seg_start = time.time()
+            ism_results = self.ism_model.infer_segmentation(
+                rgb_path=rgb_path,
+                depth_path=depth_path,
+                cam_path=camera_path,
+                cad_path=cad_path,
+                template_dir=templates_dir,
+                output_dir=output_dir
+            )
+            t_seg_end = time.time()
+            
+            if not ism_results:
+                self.get_logger().error('Instance segmentation returned no results')
+                return None
+            
+            # Save ISM results to JSON for PEM - Convert numpy arrays to lists first
+            seg_path = os.path.join(output_dir, 'sam6d_results', 'detection_ism.json')
+            os.makedirs(os.path.dirname(seg_path), exist_ok=True)
+            
+            # Convert any numpy arrays in ism_results to Python lists
+            serializable_results = []
+            for result in ism_results:
+                serializable_result = {}
+                for key, value in result.items():
+                    if isinstance(value, np.ndarray):
+                        serializable_result[key] = value.tolist()
+                    else:
+                        serializable_result[key] = value
+                serializable_results.append(serializable_result)
+            
+            with open(seg_path, 'w') as f:
+                json.dump(serializable_results, f, indent=2)
+            
+            # Apply best-only filter if enabled
+            if self.use_best_ism_only:
+                seg_path = self._select_best_detection(seg_path)
+            
+            # Step 2: Pose Estimation
+            t_pose_start = time.time()
+            
+            # Check if seg_path file exists
+            if not os.path.exists(seg_path):
+                self.get_logger().error(f'Segmentation file does not exist: {seg_path}')
+                return None
+            
+            pose_results = self.pose_model.infer_pose(
+                rgb_path=rgb_path,
+                depth_path=depth_path,
+                cam_path=camera_path,
+                cad_path=cad_path,
+                seg_path=seg_path,
+                template_path=templates_dir,
+                det_score_thresh=0.2
+            )
+            t_pose_end = time.time()
+            
+            if not pose_results:
+                self.get_logger().error('Pose estimation returned no results')
+                return None
+            
+            # Save PEM results - Handle different result formats
+            pem_path = os.path.join(output_dir, 'sam6d_results', 'detection_pem.json')
+            
+            # Convert pose_results to serializable format - handle both list and dict formats
+            if isinstance(pose_results, list):
+                # If it's already a list, process each item
+                serializable_pose_results = []
+                for result in pose_results:
+                    if isinstance(result, dict):
+                        # It's a dictionary, convert numpy arrays
+                        serializable_result = {}
+                        for key, value in result.items():
+                            if isinstance(value, np.ndarray):
+                                serializable_result[key] = value.tolist()
+                            else:
+                                serializable_result[key] = value
+                        serializable_pose_results.append(serializable_result)
+                    else:
+                        # It's not a dictionary, keep as is (might be a simple value)
+                        serializable_pose_results.append(result)
+            elif isinstance(pose_results, dict):
+                # If it's a dictionary, wrap it in a list and process
+                serializable_result = {}
+                for key, value in pose_results.items():
+                    if isinstance(value, np.ndarray):
+                        serializable_result[key] = value.tolist()
+                    else:
+                        serializable_result[key] = value
+                serializable_pose_results = [serializable_result]
+            else:
+                # Unknown format, try to convert directly
+                self.get_logger().warn(f'Unexpected pose_results format: {type(pose_results)}')
+                serializable_pose_results = pose_results
+            
+            with open(pem_path, 'w') as f:
+                json.dump(serializable_pose_results, f, indent=2)
+            
+            # Log timing
+            seg_duration = t_seg_end - t_seg_start
+            pose_duration = t_pose_end - t_pose_start
+            total_duration = time.time() - t_start
+            
+            if self.log_benchmarks:
+                self.get_logger().info(
+                    f'Persistent model benchmark: segmentation={seg_duration:.3f}s, '
+                    f'pose_estimation={pose_duration:.3f}s, total={total_duration:.3f}s'
+                )
+            
+            self.get_logger().info('SAM-6D inference with persistent models completed successfully')
+            
+            # Parse results using existing utils
+            return Sam6DUtils.parse_results(output_dir, self.get_logger())
+            
+        except Exception as e:
+            self.get_logger().error(f'Persistent model inference error: {e}')
+            self.get_logger().warn('Falling back to subprocess mode for this frame')
+            return self._run_sam6d_inference_subprocess(
+                output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model
+            )
+
+    def _run_sam6d_inference_subprocess(self, output_dir, rgb_path, depth_path, camera_path, cad_path, instance_model):
+        """Run SAM-6D inference using subprocess (original method)"""
+        # This is your existing subprocess implementation
+        try:
+            t_start = time.time()
             env = os.environ.copy()
             env.update({
                 'OUTPUT_DIR': output_dir,
@@ -348,10 +547,10 @@ class GraspSAM6D(Node):
                 'SEGMENTOR_MODEL': instance_model
             })
             
-            self.get_logger().info('Running SAM-6D inference...')
+            self.get_logger().info('Running SAM-6D inference via subprocess...')
             
             # Run instance segmentation
-            t_seg_start = time.time()  # benchmark segmentation
+            t_seg_start = time.time()
             result1 = subprocess.run(
                 ['python3', 'run_inference_custom.py', 
                  '--segmentor_model', instance_model,
@@ -367,7 +566,6 @@ class GraspSAM6D(Node):
                 timeout=600
             )
             t_seg_end = time.time()
-            seg_duration = t_seg_end - t_seg_start
             
             if result1.returncode != 0:
                 self.get_logger().error(f'Instance segmentation failed: {result1.stderr}')
@@ -379,14 +577,12 @@ class GraspSAM6D(Node):
                 self.get_logger().error(f'Segmentation results not found at {seg_path}')
                 return None
 
-            # Keep only the best ISM detection (by score/confidence) if enabled
+            # Keep only the best ISM detection if enabled
             if self.use_best_ism_only:
-                seg_path_to_use = self._select_best_detection(seg_path)
-            else:
-                seg_path_to_use = seg_path
+                seg_path = self._select_best_detection(seg_path)
 
             # Run pose estimation
-            t_pose_start = time.time()  # benchmark pose estimation
+            t_pose_start = time.time()
             result2 = subprocess.run(
                 ['python3', 'run_inference_custom.py',
                  '--output_dir', output_dir,
@@ -394,7 +590,7 @@ class GraspSAM6D(Node):
                  '--rgb_path', rgb_path,
                  '--depth_path', depth_path,
                  '--cam_path', camera_path,
-                 '--seg_path', seg_path_to_use],
+                 '--seg_path', seg_path],
                 cwd=os.path.join(self.sam6d_path, 'Pose_Estimation_Model'),
                 env=env,
                 capture_output=True,
@@ -402,27 +598,31 @@ class GraspSAM6D(Node):
                 timeout=600
             )
             t_pose_end = time.time()
-            pose_duration = t_pose_end - t_pose_start
-            total_duration = time.time() - t_start
 
             if result2.returncode != 0:
                 self.get_logger().error(f'Pose estimation failed: {result2.stderr}')
                 return None
 
-            if self.log_benchmarks:
-                self.get_logger().info(f'Benchmark: segmentation={seg_duration:.3f}s, pose_estimation={pose_duration:.3f}s, total={total_duration:.3f}s')
+            seg_duration = t_seg_end - t_seg_start
+            pose_duration = t_pose_end - t_pose_start
+            total_duration = time.time() - t_start
 
-            self.get_logger().info('SAM-6D inference completed successfully')
-            
+            if self.log_benchmarks:
+                self.get_logger().info(
+                    f'Subprocess benchmark: segmentation={seg_duration:.3f}s, '
+                    f'pose_estimation={pose_duration:.3f}s, total={total_duration:.3f}s'
+                )
+
+            self.get_logger().info('SAM-6D subprocess inference completed successfully')
             
             # Parse results using utils
             return Sam6DUtils.parse_results(output_dir, self.get_logger())
             
         except subprocess.TimeoutExpired:
-            self.get_logger().error('SAM-6D inference timeout')
+            self.get_logger().error('SAM-6D subprocess inference timeout')
             return None
         except Exception as e:
-            self.get_logger().error(f'Inference error: {e}')
+            self.get_logger().error(f'Subprocess inference error: {e}')
             return None
 
     def _select_best_detection(self, seg_path: str) -> str:
@@ -741,6 +941,17 @@ class GraspSAM6D(Node):
                     with self.model_lock:
                         self.instance_model = new_model
                     self.get_logger().info(f'Instance model changed: {self.instance_model}')
+                    
+                    # Reinitialize persistent models if they were loaded
+                    if self.use_persistent_models:
+                        try:
+                            self.get_logger().info('Reinitializing models due to instance_model change...')
+                            self._init_persistent_models()
+                            self.get_logger().info('Models reinitialized successfully')
+                        except Exception as e:
+                            self.get_logger().error(f'Failed to reinitialize models: {e}')
+                            self.get_logger().warn('Falling back to subprocess mode')
+                            self.use_persistent_models = False
 
             elif param.name == 'calib_preview':
                 with self.model_lock:
