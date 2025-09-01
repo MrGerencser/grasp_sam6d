@@ -52,11 +52,13 @@ The original SAM-6D uses a Conda-based environment. However, since ROS 2 general
 
 4. **Download object models**
    ```bash
+   cd src/grasp_sam6d
    python scripts/download_object_models.py   # or provide your own CAD files
    ```
 
 5. **Build**
    ```bash
+   cd ~/franka_ros2_ws
    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
    source install/setup.bash
    ```
