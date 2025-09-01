@@ -23,7 +23,7 @@ setup(
         'setuptools',
         'opencv-python',
         'numpy',
-        'PyYAML',  # Added for YAML parsing
+        'PyYAML',
     ],
     zip_safe=True,
     maintainer='chris',
@@ -35,6 +35,7 @@ setup(
             'sam6d_wrapper = sam6d_wrapper.sam6d_wrapper_node:main',
             'sam6d_wrapper_cube = sam6d_wrapper.sam6d_wrapper_cube_node:main',
             'grasp_executor = sam6d_wrapper.grasp_executor:main',
+            'grasp_executor_bolt = sam6d_wrapper.grasp_executor_bolt:main',
         ],
     },
 )
