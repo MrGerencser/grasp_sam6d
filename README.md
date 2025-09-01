@@ -29,7 +29,7 @@ The original SAM-6D uses a Conda-based environment. However, since ROS 2 general
 - ROS 2 Humble (Ubuntu 22.04)  
 - [ZED SDK](https://www.stereolabs.com/en-ch/developers/release) - (tested with version 5.0.5)
 - [Franka ROS 2 packages](https://github.com/frankarobotics/franka_ros2) (tested with v0.1.15)
-- [modified SAM-6D](https://github.com/JiehongLin/SAM-6D)
+- [modified SAM-6D](https://github.com/MrGerencser/SAM-6D)
 
 
 ## Installation
