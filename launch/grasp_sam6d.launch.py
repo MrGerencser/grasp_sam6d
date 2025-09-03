@@ -56,9 +56,9 @@ def generate_launch_description():
             description='Instance segmentor model: sam | sam2 | fastsam'
         ),
         DeclareLaunchArgument(
-            'debug_outputs',
+            'debug_visualization',
             default_value='true',
-            description='If true, save debug frames/results into the model folder; if false, use temp dir and clean up'
+            description='If true, save visualization for debug'
         ),
         DeclareLaunchArgument(
             'use_best_ism_only',
@@ -95,7 +95,7 @@ def generate_launch_description():
                 'transform_config': LaunchConfiguration('transform_config'),
                 'grasp_poses': LaunchConfiguration('grasp_poses'),
                 'instance_model': LaunchConfiguration('instance_model'),
-                'debug_outputs': LaunchConfiguration('debug_outputs'),
+                'debug_visualization': LaunchConfiguration('debug_visualization'),
                 'use_best_ism_only': LaunchConfiguration('use_best_ism_only'),
                 'log_benchmarks': LaunchConfiguration('log_benchmarks'),
                 'calib_preview': LaunchConfiguration('calib_preview'),

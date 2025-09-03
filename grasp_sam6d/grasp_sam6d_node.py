@@ -76,7 +76,7 @@ class GraspSAM6D(Node):
         self.declare_parameter('transform_config',  str(Path.home() / 'transform.yaml'))
         self.declare_parameter('instance_model',    'sam')
         self.declare_parameter('grasp_poses',       True)
-        self.declare_parameter('debug_outputs',     False)
+        self.declare_parameter('debug_visualization',     False)
         self.declare_parameter('calib_preview',     False)
         self.declare_parameter('use_best_ism_only', True)
         self.declare_parameter('log_benchmarks',    False)
@@ -92,7 +92,7 @@ class GraspSAM6D(Node):
         self.transform_config = self.get_parameter('transform_config').value
         self.instance_model   = self.get_parameter('instance_model').value
         self.use_grasps       = self.get_parameter('grasp_poses').value
-        self.debug_outputs    = self.get_parameter('debug_outputs').value
+        self.debug_visualization    = self.get_parameter('debug_visualization').value
         self.calib_preview    = self.get_parameter('calib_preview').value
         self.use_best_ism_only = self.get_parameter('use_best_ism_only').value
         self.log_benchmarks    = self.get_parameter('log_benchmarks').value
@@ -283,7 +283,7 @@ class GraspSAM6D(Node):
             cad_path = self.cad_path
             templates_dir = self.model_templates_dir
             instance_model = self.instance_model
-            debug_on = self.debug_outputs  # <-- snapshot
+            debug_on = True
 
         # Choose output location
         if debug_on:
@@ -419,7 +419,8 @@ class GraspSAM6D(Node):
                 cam_path=camera_path,
                 cad_path=cad_path,
                 template_dir=templates_dir,
-                output_dir=output_dir
+                output_dir=output_dir,
+                debug_vis=self.debug_visualization  # Only generate vis if debug is on
             )
             t_seg_end = time.time()
             
@@ -464,7 +465,9 @@ class GraspSAM6D(Node):
                 cad_path=cad_path,
                 seg_path=seg_path,
                 template_path=templates_dir,
-                det_score_thresh=0.2
+                det_score_thresh=0.2,
+                output_dir=output_dir,
+                debug_vis=self.debug_visualization  # Only generate vis if debug is on
             )
             t_pose_end = time.time()
             
