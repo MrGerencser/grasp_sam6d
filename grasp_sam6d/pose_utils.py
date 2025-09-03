@@ -272,7 +272,7 @@ class GraspUtils:
                 position = np.array(grasp['position'])
                 distance_to_base = np.linalg.norm(position[:2] - ee_base_xy)
                 distance_score = 1.0 / (1.0 + distance_to_base)
-                height_score = 1.0 if position[2] > 0.05 else 0.5
+                height_score = 1.0 if position[2] > 0.05 else 0.3
                 workspace_score = 1.0 if (workspace_bounds['x_min'] <= position[0] <= workspace_bounds['x_max'] and
                                           workspace_bounds['y_min'] <= position[1] <= workspace_bounds['y_max'] and
                                           workspace_bounds['z_min'] <= position[2] <= workspace_bounds['z_max']) else 0.3
@@ -280,11 +280,6 @@ class GraspUtils:
                 R_grasp = quat_to_rot(orientation)
                 z_axis = R_grasp[:, 2]
                 downward_score = max(0.0, -z_axis[2])
-                type_score = 1.0
-                if 'top' in grasp['name'].lower():
-                    type_score = 1.2
-                elif 'side' in grasp['name'].lower():
-                    type_score = 0.8
                 final_score = (distance_score * 1.5 +
                                height_score * 1.0 +
                                workspace_score * 2.0 +
@@ -293,7 +288,7 @@ class GraspUtils:
                     best_score = final_score
                     best_grasp = grasp
                 if logger:
-                    logger.debug(f'Grasp "{grasp["name"]}" scores: dist={distance_score:.2f}, height={height_score:.2f}, workspace={workspace_score:.2f}, downward={downward_score:.2f}, type={type_score:.2f}, final={final_score:.2f}')
+                    logger.debug(f'Grasp "{grasp["name"]}" scores: dist={distance_score:.2f}, height={height_score:.2f}, workspace={workspace_score:.2f}, downward={downward_score:.2f}, final={final_score:.2f}')
             except Exception as e:
                 if logger:
                     logger.warning(f'Error scoring grasp "{grasp.get("name", "unknown")}": {e}')
