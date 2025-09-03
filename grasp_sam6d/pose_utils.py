@@ -260,17 +260,17 @@ class GraspUtils:
             return None
         if workspace_bounds is None:
             workspace_bounds = {
-                'x_min': 0.2, 'x_max': 0.6,
-                'y_min': -0.3, 'y_max': 0.3,
+                'x_min': 0.2, 'x_max': 0.7,
+                'y_min': -0.4, 'y_max': 0.4,
                 'z_min': 0.01, 'z_max': 0.5
             }
         best_grasp = None
         best_score = -1
-        robot_base = np.array([0.0, 0.0, 0.0])
+        ee_base_xy = np.array([0.5, 0.0])
         for grasp in grasp_poses:
             try:
                 position = np.array(grasp['position'])
-                distance_to_base = np.linalg.norm(position - robot_base)
+                distance_to_base = np.linalg.norm(position[:2] - ee_base_xy)
                 distance_score = 1.0 / (1.0 + distance_to_base)
                 height_score = 1.0 if position[2] > 0.05 else 0.5
                 workspace_score = 1.0 if (workspace_bounds['x_min'] <= position[0] <= workspace_bounds['x_max'] and
@@ -280,7 +280,6 @@ class GraspUtils:
                 R_grasp = quat_to_rot(orientation)
                 z_axis = R_grasp[:, 2]
                 downward_score = max(0.0, -z_axis[2])
-                confidence_score = grasp['confidence']
                 type_score = 1.0
                 if 'top' in grasp['name'].lower():
                     type_score = 1.2
@@ -289,14 +288,12 @@ class GraspUtils:
                 final_score = (distance_score * 1.5 +
                                height_score * 1.0 +
                                workspace_score * 2.0 +
-                               downward_score * 1.0 +
-                               confidence_score * 1.0 +
-                               type_score * 0.5)
+                               downward_score * 1.0) 
                 if final_score > best_score:
                     best_score = final_score
                     best_grasp = grasp
                 if logger:
-                    logger.debug(f'Grasp "{grasp["name"]}" scores: dist={distance_score:.2f}, height={height_score:.2f}, workspace={workspace_score:.2f}, downward={downward_score:.2f}, conf={confidence_score:.2f}, type={type_score:.2f}, final={final_score:.2f}')
+                    logger.debug(f'Grasp "{grasp["name"]}" scores: dist={distance_score:.2f}, height={height_score:.2f}, workspace={workspace_score:.2f}, downward={downward_score:.2f}, type={type_score:.2f}, final={final_score:.2f}')
             except Exception as e:
                 if logger:
                     logger.warning(f'Error scoring grasp "{grasp.get("name", "unknown")}": {e}')
